@@ -14,10 +14,6 @@ import (
 	"github.com/grafana/tanka/pkg/spec/v1alpha1"
 )
 
-// TankaEnvironmentLabel is the label applied to all resources. Used to identify resources that are
-// eligible for deletion, if not present in the generated set of manifests.
-const TankaEnvironmentLabel = "tanka.dev/environment"
-
 // Labels injected into the manifest
 const (
 	// MetadataPrefix is a string to mark all of Tanka's fields as such
@@ -45,7 +41,7 @@ func Reconcile(raw map[string]interface{}, config v1alpha1.Config, targets []*re
 		}
 
 		if config.Spec.InjectLabels.Environment {
-			m.Metadata().Labels()[LabelEnvironment] = config.Metadata.Name
+			m.Metadata().Labels()[LabelEnvironment] = config.Metadata.NameLabel()
 		}
 
 		out = append(out, m)

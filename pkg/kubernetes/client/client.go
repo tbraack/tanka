@@ -11,7 +11,7 @@ import (
 type Client interface {
 	// Get the specified object(s) from the cluster
 	Get(namespace, kind, name string) (manifest.Manifest, error)
-	GetByLabels(namespace string, labels map[string]interface{}) (manifest.List, error)
+	GetByLabels(namespace, kind string, labels map[string]string) (manifest.List, error)
 
 	// Apply the configuration to the cluster. `data` must contain a plaintext
 	// format that is `kubectl-apply(1)` compatible
@@ -27,6 +27,9 @@ type Client interface {
 
 	// Namespaces the cluster currently has
 	Namespaces() (map[string]bool, error)
+
+	// APIResources returns all kinds known by the cluster
+	APIResources() ([]string, error)
 
 	// Info returns known informational data about the client. Best effort based,
 	// fields of `Info` that cannot be stocked with valuable data, e.g.

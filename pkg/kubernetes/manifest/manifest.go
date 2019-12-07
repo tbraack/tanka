@@ -3,6 +3,7 @@ package manifest
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/stretchr/objx"
@@ -51,7 +52,7 @@ func (m Manifest) Verify() error {
 	if !o.Get("metadata").IsMSI() {
 		err.add("metadata")
 	}
-	if !o.Get("metadata.name").IsStr() && m.Kind() != "List" {
+	if !o.Get("metadata.name").IsStr() && strings.ToLower(m.Kind()) != "list" {
 		err.add("metadata.name")
 	}
 

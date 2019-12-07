@@ -1,5 +1,7 @@
 package v1alpha1
 
+import "strings"
+
 // New creates a new Config object with internal values already set
 func New() *Config {
 	c := Config{}
@@ -29,8 +31,12 @@ type Config struct {
 // Metadata is meant for humans and not parsed Name is an exception to this
 // rule, as it's value is discovered at runtime from the directories name.
 type Metadata struct {
-	Name   string            `json:"-"`
+	Name   string            `json:"name,omitempty"`
 	Labels map[string]string `json:"labels,omitempty"`
+}
+
+func (m Metadata) NameLabel() string {
+	return strings.Replace(m.Name, "/", ".", -1)
 }
 
 // Spec defines Kubernetes properties

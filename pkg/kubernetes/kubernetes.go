@@ -16,7 +16,7 @@ import (
 
 // Kubernetes exposes methods to work with the Kubernetes orchestrator
 type Kubernetes struct {
-	Spec v1alpha1.Spec
+	Env v1alpha1.Config
 
 	// Client (kubectl)
 	ctl  client.Client
@@ -31,9 +31,9 @@ type Kubernetes struct {
 type Differ func(manifest.List) (*string, error)
 
 // New creates a new Kubernetes with an initialized client
-func New(s v1alpha1.Spec) (*Kubernetes, error) {
+func New(c v1alpha1.Config) (*Kubernetes, error) {
 	// setup client
-	ctl, err := client.New(s.APIServer)
+	ctl, err := client.New(c.Spec.APIServer)
 	if err != nil {
 		return nil, errors.Wrap(err, "creating client")
 	}
@@ -45,16 +45,16 @@ func New(s v1alpha1.Spec) (*Kubernetes, error) {
 	}
 
 	// setup diffing
-	if s.DiffStrategy == "" {
-		s.DiffStrategy = "native"
+	if c.Spec.DiffStrategy == "" {
+		c.Spec.DiffStrategy = "native"
 
 		if info.ServerVersion.LessThan(semver.MustParse("1.13.0")) {
-			s.DiffStrategy = "subset"
+			c.Spec.DiffStrategy = "subset"
 		}
 	}
 
 	k := Kubernetes{
-		Spec: s,
+		Env:  c,
 		ctl:  ctl,
 		info: *info,
 		differs: map[string]Differ{
@@ -71,26 +71,40 @@ type ApplyOpts client.ApplyOpts
 
 // Apply receives a state object generated using `Reconcile()` and may apply it to the target system
 func (k *Kubernetes) Apply(state manifest.List, opts ApplyOpts) error {
-	info, err := k.ctl.Info()
+	if false {
+		info, err := k.ctl.Info()
+		if err != nil {
+			return err
+		}
+		alert := color.New(color.FgRed, color.Bold).SprintFunc()
+
+		if !opts.AutoApprove {
+			if err := cli.Confirm(
+				fmt.Sprintf(`Applying to namespace '%s' of cluster '%s' at '%s' using context '%s'.`,
+					alert(k.Env.Spec.Namespace),
+					alert(info.Cluster.Get("name").MustStr()),
+					alert(info.Cluster.Get("cluster.server").MustStr()),
+					alert(info.Context.Get("name").MustStr()),
+				),
+				"yes",
+			); err != nil {
+				return err
+			}
+		}
+		return k.ctl.Apply(state, client.ApplyOpts(opts))
+	}
+
+	list, err := k.listOrphaned(state)
 	if err != nil {
 		return err
 	}
-	alert := color.New(color.FgRed, color.Bold).SprintFunc()
 
-	if !opts.AutoApprove {
-		if err := cli.Confirm(
-			fmt.Sprintf(`Applying to namespace '%s' of cluster '%s' at '%s' using context '%s'.`,
-				alert(k.Spec.Namespace),
-				alert(info.Cluster.Get("name").MustStr()),
-				alert(info.Cluster.Get("cluster.server").MustStr()),
-				alert(info.Context.Get("name").MustStr()),
-			),
-			"yes",
-		); err != nil {
-			return err
-		}
+	fmt.Println("orphan")
+	for _, m := range list {
+		fmt.Println(m.Identifier())
 	}
-	return k.ctl.Apply(state, client.ApplyOpts(opts))
+
+	return nil
 }
 
 // DiffOpts allow to specify additional parameters for diff operations
@@ -104,7 +118,7 @@ type DiffOpts struct {
 
 // Diff takes the desired state and returns the differences from the cluster
 func (k *Kubernetes) Diff(state manifest.List, opts DiffOpts) (*string, error) {
-	strategy := k.Spec.DiffStrategy
+	strategy := k.Env.Spec.DiffStrategy
 	if opts.Strategy != "" {
 		strategy = opts.Strategy
 	}
@@ -134,4 +148,95 @@ func objectspec(m manifest.Manifest) string {
 		m.Kind(),
 		m.Metadata().Name(),
 	)
+}
+
+// listOrphaned returns all resources known to the cluster not present in
+// Jsonnet
+func (k *Kubernetes) listOrphaned(state manifest.List) (manifest.List, error) {
+	known := make(map[manifest.Identifier]bool)
+	for _, m := range state {
+		known[m.Identifier()] = true
+	}
+	fmt.Println(known)
+
+	fmt.Println("----")
+
+	// https://github.com/kubernetes/kubectl/blob/b909fcb4a071a1a9669a9fe1f48482c848823124/pkg/cmd/apply/apply.go#L671-L688
+	kinds := []string{
+		// core
+		"ConfigMap",
+		"Endpoints",
+		"Namespace",
+		"PersistentVolumeClaim",
+		"PersistentVolume",
+		"Pod",
+		"ReplicationController",
+		"Secret",
+		"ServiceAccount",
+		"Service",
+
+		"DaemonSet",
+		"Deployment",
+		"ReplicaSet",
+		"StatefulSet",
+
+		"Job",
+		"CronJob",
+
+		"Ingress",
+
+		"ClusterRole",
+		"ClusterRoleBinding",
+		"Role",
+		"RoleBinding",
+	}
+
+	// var err error
+	// kinds, err = k.ctl.APIResources()
+	// if err != nil {
+	// 	return nil, errors.Wrap(err, "listing apiResources")
+	// }
+
+	orphaned := manifest.List{}
+
+	r := make(chan (manifest.List))
+	e := make(chan (error))
+
+	for _, kind := range kinds {
+		go k.parallelGetByLabels(kind, k.Env.Metadata.NameLabel(), r, e)
+	}
+
+	var lastErr error
+	for i := 0; i < len(kinds); i++ {
+		select {
+		case list := <-r:
+			for _, m := range list {
+				fmt.Println(m.Identifier())
+				if known[m.Identifier()] {
+					continue
+				}
+				orphaned = append(orphaned, m)
+			}
+		case err := <-e:
+			lastErr = err
+		}
+	}
+	close(r)
+	close(e)
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+
+	return orphaned, nil
+}
+
+func (k *Kubernetes) parallelGetByLabels(kind, envName string, r chan (manifest.List), e chan (error)) {
+	list, err := k.ctl.GetByLabels("", kind, map[string]string{
+		LabelEnvironment: envName,
+	})
+	if err != nil {
+		e <- errors.Wrapf(err, "getting orphans of kind '%s':", kind)
+	}
+	r <- list
 }
